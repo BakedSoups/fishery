@@ -10,6 +10,7 @@ class Boid:
         self.direction = direction
         self.turn_speed = 0.0
         self.wait = True
+        self.has_turned = False
 
 
 def draw_boid(pos_x, pos_y, radius): 
@@ -71,17 +72,17 @@ def boid_in_radius(dot,boids, distance = 20):
         if (start - target).length() <= distance: 
             return target
 
-speed = 200 
+speed = 100 
 boid_list = []
 for i in range(100):
     boid_list.append(draw_boid(100,100,10))
 
 cohesion_mode = "conga"  # "conga" follows one boid; "flock" seeks the neighbor center.
 flock_radius = 90  # Pixels within which neighbors contribute to flock cohesion.
-cohesion_margin = 10    
-cohesion_angle = math.radians(200)
-distance = 200
-separation_distance = 10
+cohesion_margin = 5    
+cohesion_angle = math.radians(20)
+distance = 600
+separation_distance = 30
 push_speed = 40  # Pixels per second
 alignment_distance = 20
 
@@ -103,7 +104,7 @@ def smooth_direction(boid, previous_direction, dt):
 def reset_flag(dt):
     for boid in boid_list:
         boid.wait = True
-    for boid in random.sample(boid_list, len(boid_list) // 10):
+    for boid in random.sample(boid_list, len(boid_list) // random.randint(3,20 )):
         boid.wait = False
 
 
@@ -177,12 +178,21 @@ def update(dt):
     if dt <= 0:
         return
     for dot in boid_list:
+        if not dot.wait:
+            # Allow another random turn next time this boid starts waiting.
+            dot.has_turned = False
+        elif not dot.has_turned:
+            dot.direction = dot.direction.rotate(math.radians(random.randint(-180, 180)))
+            dot.turn_speed = 0.0
+            dot.has_turned = True
+
+        # Capture the new heading so smoothing does not undo the random turn.
         previous_direction = dot.direction
-        boid_speed = speed if dot.wait else 180
+        boid_speed = speed if dot.wait else 10
         
         dot.shape.position += dot.direction * boid_speed * dt
         # Follow one boid or steer toward the local flock's center.
-        target = get_cohesion_target(dot, boid_list)
+        target = get_cohesion_target(dot, boid_list) if not dot.wait else None
         
         if target is not None: 
             turn = get_cohesion_angle(dot, dt, target)
@@ -198,6 +208,9 @@ def update(dt):
 
         # Match the direction of the first other boid within range.
         for nearby_boid in boid_list:
+            # Waiting boids keep their heading instead of matching neighbors.
+            if dot.wait:
+                break
             if nearby_boid is dot:
                 continue
             offset = Vec2(nearby_boid.shape.x, nearby_boid.shape.y) - Vec2(dot.shape.x, dot.shape.y)
@@ -252,7 +265,7 @@ def on_draw():
 
 # Update movement 60 times per second
 reset_flag(0)
-pyglet.clock.schedule_interval(reset_flag, 1)
+pyglet.clock.schedule_interval(reset_flag, 3)
 pyglet.clock.schedule_interval(update, 1 / 60)
 
 pyglet.app.run()
