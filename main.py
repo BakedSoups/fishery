@@ -17,12 +17,12 @@ def draw_boid(pos_x, pos_y, radius):
     direction = Vec2(random.randint(2,5), random.randint(2,5)).normalize()
     return Boid(pyglet.shapes.Circle(pos_x,pos_y, radius,segments =3), direction)
 
-def raycast_wall(dot, direction, distance=20):
+def raycast_wall(dot, direction, ray_distance=20):
     # Starting position of the ray
     start = Vec2(dot.x, dot.y)
 
     # Endpoint of the ray
-    end = start + direction.normalize() * distance
+    end = start + direction.normalize() * ray_distance
 
     # Keep the ray endpoint at least 20 pixels inside the boid's wall boundary.
     clearance = dot.radius + 20
@@ -35,7 +35,7 @@ def raycast_wall(dot, direction, distance=20):
 
     return hit
 
-def raycast_boid(dot, direction, boids, distance =1, margin = 20): 
+def raycast_boid(dot, direction, boids, ray_distance =1, margin = 20): 
     # Starting position of the ray
     start = Vec2(dot.x, dot.y)
     ray = direction.normalize()
@@ -51,7 +51,7 @@ def raycast_boid(dot, direction, boids, distance =1, margin = 20):
         # 
         projection = offset.dot(ray)
 
-        if 0 <= projection <= distance: 
+        if 0 <= projection <= ray_distance: 
             # Closest point on ray to target
             closest = start + ray * projection
 
@@ -61,7 +61,7 @@ def raycast_boid(dot, direction, boids, distance =1, margin = 20):
 
     return None
 
-def boid_in_radius(dot,boids, distance = 20): 
+def boid_in_radius(dot,boids, ray_distance = 20): 
     start = Vec2(dot.x, dot.y)
     for boid in boids: 
         
@@ -69,7 +69,7 @@ def boid_in_radius(dot,boids, distance = 20):
         if boid is dot:
             continue
         target = Vec2(boid.x, boid.y)
-        if (start - target).length() <= distance: 
+        if (start - target).length() <= ray_distance: 
             return target
 
 speed = 100 
@@ -80,8 +80,8 @@ for i in range(100):
 cohesion_mode = "conga"  # "conga" follows one boid; "flock" seeks the neighbor center.
 flock_radius = 90  # Pixels within which neighbors contribute to flock cohesion.
 cohesion_margin = 5    
-cohesion_angle = math.radians(20)
-distance = 600
+cohesion_angle = math.radians(90)
+ray_distance = 600
 separation_distance = 30
 push_speed = 40  # Pixels per second
 alignment_distance = 20
@@ -112,7 +112,7 @@ def get_cohesion_target(dot, boids):
     if cohesion_mode == "conga":
         if dot.wait:
             return None
-        return raycast_boid(dot.shape, dot.direction, boids, distance, cohesion_margin)
+        return raycast_boid(dot.shape, dot.direction, boids, ray_distance, cohesion_margin)
     if cohesion_mode != "flock":
         raise ValueError('cohesion_mode must be "conga" or "flock"')
 
@@ -127,7 +127,7 @@ def get_cohesion_target(dot, boids):
         if neighbor is dot:
             continue
         neighbor_position = Vec2(neighbor.shape.x, neighbor.shape.y)
-        # Subtract positions to get the offset; its length is the distance.
+        # Subtract positions to get the offset; its length is the ray_distance.
         # Only include neighbors at or inside flock_radius, in any direction.
         if (neighbor_position - position).length() <= flock_radius:
             center += neighbor_position
