@@ -8,9 +8,43 @@ class Boid:
     def __init__(self, shape: pyglet.shapes.Circle, direction:Vec2): 
         self.shape = shape
         self.direction = direction
+        self.is_leader = False
+        self.follow_target = None
         self.turn_speed = 0.0
-        self.wait = True
         self.has_turned = False
+        self.pause_timer = 0.0
+        self.pause_cooldown = random.uniform(1.0, 4.0)
+        self.pause_turn_remaining = 0.0
+        self.slow_timer = 0.0
+        self.wave_delay = 0.0
+        self.wave_kind = None
+
+
+speed = 100
+cohesion_margin = 20  # Width of the ray corridor around a fish.
+ray_distance = 600
+follow_distance = 28  # How far behind the fish ahead a follower aims.
+leader_fraction = 0.12
+separation_distance = 20
+leader_separation_distance = 36
+push_speed = 40  # Pixels per second
+leader_push_speed = 90
+follow_speed = 80
+follow_steer_strength = 10.0  # How quickly followers turn toward their target.
+pause_chance_per_second = 0.08
+pause_duration = (3.0, 5.0)  # Seconds each fish remains stopped and rotating.
+pause_turn_speed = math.radians(240)
+slow_move_chance = 0.45
+slow_move_duration = (3.0, 5.0)
+slow_speed_factor = 0.3
+wave_follow_delay = 0.35
+leader_shift_interval = 8
+
+wall_range = 60  # Pixels from the boid's edge to start turning.
+max_wall_turn_speed = 360  # Degrees per second.
+leader_wall_turn_factor = 0.35  # Leaders are less affected by wall steering.
+turn_smoothing_time = 0.15  # Seconds for steering changes to settle.
+
 
 
 def draw_boid(pos_x, pos_y, radius): 
@@ -35,14 +69,16 @@ def raycast_wall(dot, direction, ray_distance=20):
 
     return hit
 
-def raycast_boid(dot, direction, boids, ray_distance =1, margin = 20): 
+def raycast_boid(dot, direction, boids, ray_distance=1, margin=20):
     # Starting position of the ray
     start = Vec2(dot.x, dot.y)
     ray = direction.normalize()
     # Endpoint of the ray
 
-    for boid in boids: 
-        boid = boid.shape
+    closest_boid = None
+    closest_projection = ray_distance
+    for candidate in boids:
+        boid = candidate.shape
         if boid is dot:
             continue
         target = Vec2(boid.x, boid.y)
@@ -51,15 +87,16 @@ def raycast_boid(dot, direction, boids, ray_distance =1, margin = 20):
         # 
         projection = offset.dot(ray)
 
-        if 0 <= projection <= ray_distance: 
+        if 0 <= projection <= ray_distance and projection < closest_projection:
             # Closest point on ray to target
             closest = start + ray * projection
 
             # Check if ray intersects the target's hitbox
             if (target - closest).length() <= boid.radius + margin:
-                return boid
+                closest_boid = candidate
+                closest_projection = projection
 
-    return None
+    return closest_boid
 
 def boid_in_radius(dot,boids, ray_distance = 20): 
     start = Vec2(dot.x, dot.y)
@@ -72,25 +109,6 @@ def boid_in_radius(dot,boids, ray_distance = 20):
         if (start - target).length() <= ray_distance: 
             return target
 
-speed = 100 
-boid_list = []
-for i in range(100):
-    boid_list.append(draw_boid(100,100,10))
-
-cohesion_mode = "conga"  # "conga" follows one boid; "flock" seeks the neighbor center.
-flock_radius = 90  # Pixels within which neighbors contribute to flock cohesion.
-cohesion_margin = 5    
-cohesion_angle = math.radians(90)
-ray_distance = 600
-separation_distance = 30
-push_speed = 40  # Pixels per second
-alignment_distance = 20
-
-wall_range = 60  # Pixels from the boid's edge to start turning.
-max_wall_turn_speed = 360  # Degrees per second.
-turn_smoothing_time = 0.15  # Seconds for steering changes to settle.
-
-
 def smooth_direction(boid, previous_direction, dt):
     # Smooth the signed turn across the -pi/pi boundary, not the vector itself.
     angle = math.atan2(
@@ -101,66 +119,60 @@ def smooth_direction(boid, previous_direction, dt):
     boid.turn_speed += (angle / dt - boid.turn_speed) * blend
     boid.direction = previous_direction.rotate(boid.turn_speed * dt)
 
-def reset_flag(dt):
+def reset_flag(delta):
+    # Leaders are selected occasionally, but remain leaders until the next
+    # reset. Every other fish is a follower.
+    leader_count = max(1, round(len(boid_list) * leader_fraction))
+    leaders = set(random.sample(boid_list, leader_count))
     for boid in boid_list:
-        boid.wait = True
-    for boid in random.sample(boid_list, len(boid_list) // random.randint(3,20 )):
-        boid.wait = False
+        boid.is_leader = boid in leaders
+        boid.follow_target = None
+        boid.wave_delay = 0.0
+        boid.wave_kind = None
+        boid.has_turned = False
 
 
-def get_cohesion_target(dot, boids):
-    if cohesion_mode == "conga":
-        if dot.wait:
-            return None
-        return raycast_boid(dot.shape, dot.direction, boids, ray_distance, cohesion_margin)
-    if cohesion_mode != "flock":
-        raise ValueError('cohesion_mode must be "conga" or "flock"')
+def get_conga_target(dot, boids):
+    if dot.is_leader:
+        return None
 
-    # Every boid participates in flock cohesion, regardless of its wait flag.
-    position = Vec2(dot.shape.x, dot.shape.y)
-    # Accumulate neighbor positions first; divide later to find their average.
-    center = Vec2(0, 0)
-    count = 0
-    # Check every boid to see whether it belongs to this boid's local group.
-    for neighbor in boids:
-        # Skip this boid itself so it does not contribute to its own target.
-        if neighbor is dot:
-            continue
-        neighbor_position = Vec2(neighbor.shape.x, neighbor.shape.y)
-        # Subtract positions to get the offset; its length is the ray_distance.
-        # Only include neighbors at or inside flock_radius, in any direction.
-        if (neighbor_position - position).length() <= flock_radius:
-            center += neighbor_position
-            count += 1
-    # Average the included positions. With no neighbors, return no target
-    # instead of dividing by zero.
-    return center / count if count else None
+    # Keep following the same fish instead of selecting a new fish every
+    # frame. Reacquire only after the current target is clearly lost.
+    target = dot.follow_target
+    if target is not None:
+        offset = Vec2(target.shape.x, target.shape.y) - Vec2(dot.shape.x, dot.shape.y)
+        projection = offset.dot(dot.direction)
+        lateral = abs(offset.x * dot.direction.y - offset.y * dot.direction.x)
+        target_lost = (
+            offset.length() > ray_distance * 1.2 or
+            projection < -follow_distance or
+            lateral > target.shape.radius + cohesion_margin * 2
+        )
+        if target_lost:
+            target = None
+
+    if target is None:
+        target = raycast_boid(dot.shape, dot.direction, boids, ray_distance, cohesion_margin)
+        dot.follow_target = target
+    if target is None:
+        return None
+
+    # Aim behind the fish so the follower settles into a line.
+    return Vec2(target.shape.x, target.shape.y) - target.direction * follow_distance
 
 
-def get_cohesion_angle(dot, dt, target):
+def apply_follow_steering(dot, target, dt):
+    """Apply a seek force toward the point behind the fish ahead."""
     offset = Vec2(target.x, target.y) - Vec2(dot.shape.x, dot.shape.y)
     if offset.length() < 1e-8:
-        return 0.0
-    target_direction = offset.normalize()
-    angle = math.atan2(
-        dot.direction.x * target_direction.y - dot.direction.y * target_direction.x,
-        dot.direction.dot(target_direction)
-    )
+        return
 
-    # Limit cohesion to the configured turn rate.
-    max_turn = cohesion_angle * dt
-    turn = max(-max_turn, min(max_turn, angle))
-    return turn
-
-def get_alignment_angle(dot, dt, target):
-    desired = target.direction
-    angle = math.atan2(
-        dot.direction.x * desired.y - dot.direction.y * desired.x,
-        dot.direction.dot(desired),
-    )
-    max_turn = math.radians(90) * dt
-    return max(-max_turn, min(max_turn, angle))
-
+    desired_direction = offset.normalize()
+    steering = desired_direction - dot.direction
+    # Integrate the steering force and normalize it back into a heading.
+    # This is stronger and more responsive than applying a tiny fixed turn.
+    response = min(1.0, follow_steer_strength * dt)
+    dot.direction = (dot.direction + steering * response).normalize()
 
 def get_seperation_force(dot, dt, target): 
     # Return the displacement; update() applies it to the boid.
@@ -169,8 +181,10 @@ def get_seperation_force(dot, dt, target):
         away = Vec2(1, 0)
     gap = away.length()
     # pushes the boid instead 
-    if 0 < gap < separation_distance:
-        push = min(separation_distance - gap, push_speed * dt)
+    separation_limit = leader_separation_distance if dot.is_leader else separation_distance
+    if 0 < gap < separation_limit:
+        max_push_speed = leader_push_speed if dot.is_leader else push_speed
+        push = min(separation_limit - gap, max_push_speed * dt)
         return away.normalize() * push
     return Vec2(0, 0)
     
@@ -178,46 +192,86 @@ def update(dt):
     if dt <= 0:
         return
     for dot in boid_list:
-        if not dot.wait:
-            # Allow another random turn next time this boid starts waiting.
+        dot.pause_cooldown = max(0.0, dot.pause_cooldown - dt)
+
+        # Propagate a leader's stop/slow state down the chain. The delay makes
+        # the behavior travel backward through the line instead of happening
+        # to every fish on the same frame.
+        if not dot.is_leader and dot.wave_delay <= 0 and dot.pause_timer <= 0 and dot.slow_timer <= 0:
+            target = dot.follow_target
+            if target is not None:
+                if target.pause_timer > 0:
+                    dot.wave_kind = "pause"
+                    dot.wave_delay = wave_follow_delay
+                elif target.slow_timer > 0:
+                    dot.wave_kind = "slow"
+                    dot.wave_delay = wave_follow_delay
+
+        if dot.wave_delay > 0:
+            dot.wave_delay -= dt
+            if dot.wave_delay <= 0:
+                if dot.wave_kind == "pause":
+                    dot.pause_timer = random.uniform(*pause_duration)
+                    dot.pause_turn_remaining = random.choice((-1, 1)) * math.radians(random.uniform(120, 220))
+                elif dot.wave_kind == "slow":
+                    dot.slow_timer = random.uniform(*slow_move_duration)
+                dot.wave_kind = None
+                dot.pause_cooldown = random.uniform(2.0, 6.0)
+
+        # Occasionally stop and rotate away before continuing. This gives the
+        # school some independent motion without changing the follow target.
+        if dot.pause_timer > 0:
+            turn = max(-pause_turn_speed * dt, min(pause_turn_speed * dt, dot.pause_turn_remaining))
+            dot.direction = dot.direction.rotate(turn)
+            dot.pause_turn_remaining -= turn
+            dot.pause_timer -= dt
+            if dot.pause_timer <= 0:
+                dot.pause_timer = 0.0
+                dot.pause_turn_remaining = 0.0
+                dot.pause_cooldown = random.uniform(2.0, 6.0)
+            continue
+
+        if dot.wave_delay <= 0 and dot.pause_cooldown <= 0 and random.random() < pause_chance_per_second * dt:
+            if random.random() < slow_move_chance:
+                dot.slow_timer = random.uniform(*slow_move_duration)
+            else:
+                dot.pause_timer = random.uniform(*pause_duration)
+                dot.pause_turn_remaining = random.choice((-1, 1)) * math.radians(random.uniform(120, 220))
+                continue
+
+        if not dot.is_leader:
+            # Followers are free to pause and turn again later.
             dot.has_turned = False
         elif not dot.has_turned:
-            dot.direction = dot.direction.rotate(math.radians(random.randint(-180, 180)))
-            dot.turn_speed = 0.0
+            # Leaders keep their current heading when the leader set resets.
+            # Their initial direction and wall avoidance provide the motion.
             dot.has_turned = True
 
         # Capture the new heading so smoothing does not undo the random turn.
         previous_direction = dot.direction
-        boid_speed = speed if dot.wait else 10
+        boid_speed = speed if dot.is_leader else follow_speed
+        if dot.slow_timer > 0:
+            boid_speed *= slow_speed_factor
+            dot.slow_timer -= dt
+            if dot.slow_timer <= 0:
+                dot.slow_timer = 0.0
+                dot.pause_cooldown = random.uniform(2.0, 6.0)
         
         dot.shape.position += dot.direction * boid_speed * dt
-        # Follow one boid or steer toward the local flock's center.
-        target = get_cohesion_target(dot, boid_list) if not dot.wait else None
+        # Follow the latched fish ahead when this fish is not a leader.
+        target = get_conga_target(dot, boid_list) if not dot.is_leader else None
         
-        if target is not None: 
-            turn = get_cohesion_angle(dot, dt, target)
-            dot.direction = dot.direction.rotate(turn)
+        if target is not None:
+            apply_follow_steering(dot, target, dt)
 
         # make sure they are seperated
-        target_boid = boid_in_radius(dot.shape, boid_list, separation_distance)
+        separation_radius = leader_separation_distance if dot.is_leader else separation_distance
+        target_boid = boid_in_radius(dot.shape, boid_list, separation_radius)
         if target_boid is not None:
             push = get_seperation_force(dot, dt, target_boid)
             dot.shape.position += push
             dot.shape.x = max(dot.shape.radius, min(dot.shape.x, window.width - dot.shape.radius))
             dot.shape.y = max(dot.shape.radius, min(dot.shape.y, window.height - dot.shape.radius))
-
-        # Match the direction of the first other boid within range.
-        for nearby_boid in boid_list:
-            # Waiting boids keep their heading instead of matching neighbors.
-            if dot.wait:
-                break
-            if nearby_boid is dot:
-                continue
-            offset = Vec2(nearby_boid.shape.x, nearby_boid.shape.y) - Vec2(dot.shape.x, dot.shape.y)
-            if offset.length() <= alignment_distance:
-                turn = get_alignment_angle(dot, dt, nearby_boid)
-                dot.direction = dot.direction.rotate(turn)
-                break
 
         # Turn inward faster as the boid's edge approaches a wall.
         walls = (
@@ -239,18 +293,27 @@ def update(dt):
                 dot.direction.x * desired.y - dot.direction.y * desired.x,
                 dot.direction.dot(desired),
             )
-            max_turn = math.radians(max_wall_turn_speed) * proximity * dt
+            wall_turn_factor = leader_wall_turn_factor if dot.is_leader else 1.0
+            max_turn = math.radians(max_wall_turn_speed) * wall_turn_factor * proximity * dt
             turn = max(-max_turn, min(max_turn, angle))
             dot.direction = dot.direction.rotate(turn)
 
-        # Ease into the combined steering requested by neighbors and walls.
-        smooth_direction(dot, previous_direction, dt)
+        # Generic smoothing would damp the seek force above, so only use it
+        # for leaders.
+        if dot.is_leader:
+            smooth_direction(dot, previous_direction, dt)
 
     # if its at a border stop
         dot.shape.x = max(dot.shape.radius, min(dot.shape.x, window.width - dot.shape.radius))
         dot.shape.y = max(dot.shape.radius, min(dot.shape.y, window.height - dot.shape.radius))
                 
-
+boid_list = []
+for i in range(100):
+    boid_list.append(draw_boid(
+        random.randint(30, window.width - 30),
+        random.randint(30, window.height - 30),
+        10,
+    ))
         
 
 @window.event
@@ -265,7 +328,7 @@ def on_draw():
 
 # Update movement 60 times per second
 reset_flag(0)
-pyglet.clock.schedule_interval(reset_flag, 3)
+pyglet.clock.schedule_interval(reset_flag, leader_shift_interval)
 pyglet.clock.schedule_interval(update, 1 / 60)
 
 pyglet.app.run()
